@@ -1,0 +1,5 @@
+# @package _global_
+
+defaults:
+  - override /data: random_catagorical
+  - override /task: random_catagorical__id_assoc_ttest

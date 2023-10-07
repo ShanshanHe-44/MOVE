@@ -1,0 +1,20 @@
+defaults:
+  - analyze_latent
+
+batch_size: 10
+
+feature_names:
+  - Metagenomics_1
+  - Metagenomics_4
+  - Metagenomics_5
+  - Metagenomics_10
+
+model:
+  num_hidden:
+    - 12
+  num_latent: 10
+  dropout: .1
+
+training_loop:
+  lr: 1e-4
+  num_epochs: 100 

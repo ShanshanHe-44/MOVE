@@ -6,6 +6,7 @@ __all__ = [
     "TuneModelStabilityConfig",
     "IdentifyAssociationsConfig",
     "IdentifyAssociationsBayesConfig",
+    "IdentifyAssociationsBayesCatConfig",
     "IdentifyAssociationsTTestConfig",
 ]
 
@@ -167,6 +168,12 @@ class IdentifyAssociationsBayesConfig(IdentifyAssociationsConfig):
 
     ...
 
+@dataclass
+class IdentifyAssociationsBayesCatConfig(IdentifyAssociationsConfig):
+    """Configure the probabilistic approach to identify associations."""
+    """Only for the catagorical inout datasets"""
+    ...
+
 
 @dataclass
 class IdentifyAssociationsTTestConfig(IdentifyAssociationsConfig):
@@ -248,6 +255,11 @@ cs.store(
     group="task",
     name="identify_associations_bayes_schema",
     node=IdentifyAssociationsBayesConfig,
+)
+cs.store(
+    group="task",
+    name="identify_associations_bayes_cat_schema",
+    node=IdentifyAssociationsBayesCatConfig,
 )
 cs.store(
     group="task",

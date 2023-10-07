@@ -17,6 +17,7 @@ from move.analysis.metrics import get_2nd_order_polynomial
 
 from move.conf.schema import (
     IdentifyAssociationsBayesConfig,
+    IdentifyAssociationsBayesCatConfig,
     IdentifyAssociationsConfig,
     IdentifyAssociationsKSConfig,
     IdentifyAssociationsTTestConfig,
@@ -40,7 +41,7 @@ from move.visualization.dataset_distributions import (
     plot_reconstruction_movement,
 )
 
-TaskType = Literal["bayes", "ttest", "ks"]
+TaskType = Literal["bayes", "bayes_cat","ttest", "ks"]
 CONTINUOUS_TARGET_VALUE = ["minimum", "maximum", "plus_std", "minus_std"]
 
 
@@ -50,6 +51,8 @@ def _get_task_type(
     task_type = OmegaConf.get_type(task_config)
     if task_type is IdentifyAssociationsBayesConfig:
         return "bayes"
+    if task_type is IdentifyAssociationsBayesCatConfig:
+        return "bayes_cat"
     if task_type is IdentifyAssociationsTTestConfig:
         return "ttest"
     if task_type is IdentifyAssociationsKSConfig:
@@ -110,6 +113,7 @@ def prepare_for_categorical_perturbation(
     )
     dataloaders.append(baseline_dataloader)
 
+    
     baseline_dataset = cast(MOVEDataset, baseline_dataloader.dataset)
 
     assert baseline_dataset.con_all is not None
@@ -121,11 +125,17 @@ def prepare_for_categorical_perturbation(
     target_dataset = cat_list[target_dataset_idx]
     feature_mask = np.all(target_dataset == target_value, axis=2)  # 2D: N x P
     feature_mask |= np.sum(target_dataset, axis=2) == 0
+        
+    cat_list_wo_target = cat_list.copy()
+    cat_list_wo_target.pop(target_dataset_idx)
+    nan_mask_cat = [np.all(i == [0,0], axis = 2) for i in cat_list_wo_target] # in case there are more than one catagorical dataset
+    nan_mask_cat = np.hstack(nan_mask_cat)
 
     return (
         dataloaders,
         nan_mask,
         feature_mask,
+        nan_mask_cat
     )
 
 
@@ -292,6 +302,104 @@ def _bayes_approach(
     logger.debug(f"FDR range: [{fdr[0]:.3f} {fdr[-1]:.3f}]")
 
     return sort_ids[:idx], prob[:idx], fdr[:idx], bayes_k[:idx]
+
+def _bayes_cat_approach(
+    config: MOVEConfig,
+    task_config: IdentifyAssociationsBayesCatConfig,
+    train_dataloader: DataLoader,
+    baseline_dataloader: DataLoader,
+    dataloaders: list[DataLoader],
+    models_path: Path,
+    num_perturbed: int,
+    num_samples: int,
+    num_catagorical: int,
+    nan_mask_cat: BoolArray,
+    feature_mask: BoolArray,
+) -> tuple[Union[IntArray, FloatArray], ...]:
+
+    assert task_config.model is not None
+    device = torch.device("cuda" if task_config.model.cuda == True else "cpu")
+
+    # Train models
+    logger = get_logger(__name__)
+    logger.info("Training models")
+    mean_prob = np.zeros((num_perturbed, num_catagorical))
+    normalizer = 1 / task_config.num_refits
+
+    # Last appended dataloader is the baseline
+    baseline_dataset = cast(MOVEDataset, baseline_dataloader.dataset)
+
+    for j in range(task_config.num_refits):
+        # Initialize model
+        model: VAE = hydra.utils.instantiate(
+            task_config.model,
+            continuous_shapes=baseline_dataset.con_shapes,
+            categorical_shapes=baseline_dataset.cat_shapes,
+        )
+        if j == 0:
+            logger.debug(f"Model: {model}")
+
+        # Train/reload model
+        model_path = models_path / f"model_{task_config.model.num_latent}_{j}.pt"
+        if model_path.exists():
+            logger.debug(f"Re-loading refit {j + 1}/{task_config.num_refits}")
+            model.load_state_dict(torch.load(model_path))
+            model.to(device)
+        else:
+            logger.debug(f"Training refit {j + 1}/{task_config.num_refits}")
+            model.to(device)
+            hydra.utils.call(
+                task_config.training_loop,
+                model=model,
+                train_dataloader=train_dataloader,
+            )
+            if task_config.save_refits:
+                torch.save(model.state_dict(), model_path)
+        model.eval()
+
+        # Calculate baseline reconstruction
+        baseline_recat, _ = model.reconstruct(baseline_dataloader)
+
+        # Calculate perturb reconstruction => keep track of mean difference
+        for i in range(num_perturbed):
+            perturb_recat, _ = model.reconstruct(dataloaders[i])
+            diff_recat = (perturb_recat != baseline_recat) # T: if the class change 
+            mask_cat = feature_mask[:, [i]]| nan_mask_cat
+            diff_recat = np.ma.masked_array(diff_recat, mask = mask_cat)
+            prob = np.ma.compressed(np.mean(diff_recat, axis=0))  # 1D: C
+            mean_prob[i, :] = prob * normalizer
+
+
+    # Calculate Bayes factors
+    logger.info("Identifying significant features")
+    bayes_k = np.empty((num_perturbed, num_catagorical))
+    bayes_mask = np.zeros(np.shape(bayes_k))
+    for i in range(num_perturbed):
+        bayes_k[i, :] = np.log(mean_prob[i,] + 1e-8) - np.log(1 - mean_prob[i,] + 1e-8)
+
+    bayes_mask[bayes_mask != 0] = 1
+    bayes_mask = np.array(bayes_mask, dtype=bool)
+
+    # Calculate Bayes probabilities
+    bayes_abs = np.abs(bayes_k)
+    bayes_p = np.exp(bayes_abs) / (1 + np.exp(bayes_abs))  # 2D: N x C
+    bayes_abs[bayes_mask] = np.min(
+        bayes_abs
+    )  # Bring feature_i feature_i associations to minimum
+    sort_ids = np.argsort(bayes_abs, axis=None)[::-1]  # 1D: N x C
+    prob = np.take(bayes_p, sort_ids)  # 1D: N x C
+    logger.debug(f"Bayes proba range: [{prob[-1]:.3f} {prob[0]:.3f}]")
+
+    # Sort Bayes
+    bayes_k = np.take(bayes_k, sort_ids)  # 1D: N x C
+
+    # Calculate FDR
+    fdr = np.cumsum(1 - prob) / np.arange(1, prob.size + 1)  # 1D
+    idx = np.argmin(np.abs(fdr - task_config.sig_threshold))
+    logger.debug(f"FDR range: [{fdr[0]:.3f} {fdr[-1]:.3f}]")
+
+    return sort_ids[:idx], prob[:idx], fdr[:idx], bayes_k[:idx]
+
 
 
 def _ttest_approach(
@@ -763,11 +871,18 @@ def identify_associations(config: MOVEConfig) -> None:
         batch_size=task_config.batch_size,
         drop_last=True,
     )
-
     con_shapes = [con.shape[1] for con in con_list]
+    target_dataset_idx = config.data.categorical_names.index(task_config.target_dataset)
+    if len(cat_list) >1:
+        cat_shapes = [cat.shape[1] for cat in cat_list] # [5,20] 
+        cat_shapes.pop(target_dataset_idx) #[20]
+        num_catagorical = sum(cat_shapes)  # 20 
+
+    #cat_shapes = cat_shapes[-target_dataset_idx] # remove the target dataset
 
     num_samples = len(cast(Sized, train_dataloader.sampler))  # N
     num_continuous = sum(con_shapes)  # C
+    
     logger.debug(f"# continuous features: {num_continuous}")
 
     # Creating the baseline dataloader:
@@ -789,7 +904,7 @@ def identify_associations(config: MOVEConfig) -> None:
     # Identify associations between categorical and continuous features:
     else:
         logger.info("Beginning task: identify associations categorical")
-        (dataloaders, nan_mask, feature_mask,) = prepare_for_categorical_perturbation(
+        (dataloaders, nan_mask, feature_mask,nan_mask_cat) = prepare_for_categorical_perturbation(
             config, interim_path, baseline_dataloader, cat_list
         )
 
@@ -815,6 +930,25 @@ def identify_associations(config: MOVEConfig) -> None:
         )
 
         extra_colnames = ["proba", "fdr", "bayes_k"]
+    
+    elif task_type == "bayes_cat":
+        task_config = cast(IdentifyAssociationsBayesCatConfig, task_config)
+        sig_ids, *extra_cols = _bayes_cat_approach(
+            config,
+            task_config,
+            train_dataloader,
+            baseline_dataloader,
+            dataloaders,
+            models_path,
+            num_perturbed,
+            num_samples,
+            num_catagorical,
+            nan_mask_cat,
+            feature_mask,
+        )
+
+        extra_colnames = ["proba", "fdr", "bayes_k"]
+
 
     elif task_type == "ttest":
         task_config = cast(IdentifyAssociationsTTestConfig, task_config)

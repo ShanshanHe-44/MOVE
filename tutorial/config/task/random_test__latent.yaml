@@ -1,0 +1,29 @@
+defaults:
+  - analyze_latent
+
+batch_size: 10
+
+feature_names:
+  # - proteomics_1
+  # - proteomics_2
+  # - proteomics_3
+  # - proteomics_4
+  # - proteomics_5
+  - Metagenomics_1
+  - Metagenomics_4
+  - Metagenomics_5
+  - Metagenomics_10
+  #- drugs_20
+  #- metagenomics_174
+  #- proteomics_195
+
+model:
+  num_hidden:
+    - 12
+  num_latent: 8 #150
+  beta: .0001
+  dropout: .1
+
+training_loop:
+  lr: 1e-4
+  num_epochs: 300

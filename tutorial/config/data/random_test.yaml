@@ -1,0 +1,21 @@
+# DO NOT EDIT DEFAULTS
+
+defaults:
+  - base_data
+
+# FEEL FREE TO EDIT BELOW
+
+raw_data_path: data/              # where raw data is stored
+interim_data_path: interim_data_test/  # where intermediate files will be stored
+results_path: results_test/            # where result files will be placed
+
+sample_names: random.test.ids    # names/IDs of each sample, must appear in
+                                  # the other datasets
+
+categorical_inputs:               # a list of categorical datasets
+  - name: random.test.drugs
+  - name: random.test.metagenomics
+
+continuous_inputs:                # a list of continuous datasets
+  - name: random.test.proteomics
+  
