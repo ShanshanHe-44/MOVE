@@ -1,0 +1,6 @@
+feature_a_id	feature_b_id	feature_a_name	feature_b_name	feature_b_dataset	proba	fdr	bayes_k
+2	5	Drugs_3	Proteomics_6	random.test.proteomics	0.9999999900000002	9.999999828202988e-09	-18.420680753952368
+0	7	Drugs_1	Proteomics_8	random.test.proteomics	0.969543137817259	0.015228436091370423	3.4605136407994324
+0	16	Drugs_1	Proteomics_17	random.test.proteomics	0.9693877457142858	0.02035637548948503	3.455264286581606
+2	13	Drugs_3	Proteomics_14	random.test.proteomics	0.9322916580208335	0.0321943671119054	-2.6224363114131783
+1	17	Drugs_2	Proteomics_18	random.test.proteomics	0.9242424157575759	0.04090701053800914	2.5014358305588913

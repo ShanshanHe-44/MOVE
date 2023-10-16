@@ -4,7 +4,7 @@ defaults:
 
 batch_size: 10
 
-num_refits: 40
+num_refits: 10
 
 target_dataset: random.test.drugs
 target_value: 1
@@ -12,9 +12,9 @@ save_refits: True
 
 model:
   num_hidden:
-    - 12
-  num_latent: 8
+    - 200
+  num_latent: 30
 
 training_loop:
   lr: 1e-4
-  num_epochs: 100
+  num_epochs: 50

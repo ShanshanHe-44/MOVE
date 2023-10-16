@@ -128,8 +128,11 @@ def prepare_for_categorical_perturbation(
         
     cat_list_wo_target = cat_list.copy()
     cat_list_wo_target.pop(target_dataset_idx)
-    nan_mask_cat = [np.all(i == [0,0], axis = 2) for i in cat_list_wo_target] # in case there are more than one catagorical dataset
-    nan_mask_cat = np.hstack(nan_mask_cat)
+    if cat_list_wo_target == []:
+        nan_mask_cat = np.array([])
+    else:
+        nan_mask_cat = [np.all(i == [0,0], axis = 2) for i in cat_list_wo_target] # in case there are more than one catagorical dataset
+        nan_mask_cat = np.hstack(nan_mask_cat)
 
     return (
         dataloaders,
@@ -325,6 +328,8 @@ def _bayes_cat_approach(
     logger.info("Training models")
     mean_prob = np.zeros((num_perturbed, num_catagorical))
     normalizer = 1 / task_config.num_refits
+    target_dataset_idx = config.data.categorical_names.index(task_config.target_dataset)
+
 
     # Last appended dataloader is the baseline
     baseline_dataset = cast(MOVEDataset, baseline_dataloader.dataset)
@@ -358,11 +363,15 @@ def _bayes_cat_approach(
         model.eval()
 
         # Calculate baseline reconstruction
-        baseline_recat, _ = model.reconstruct(baseline_dataloader)
+        baseline_recat, _ = model.reconstruct(baseline_dataloader) # including drug data
+        baseline_recat.pop(target_dataset_idx)
+        baseline_recat = np.hstack(baseline_recat) # combine all catagoical data without drug data into one array
 
         # Calculate perturb reconstruction => keep track of mean difference
         for i in range(num_perturbed):
             perturb_recat, _ = model.reconstruct(dataloaders[i])
+            perturb_recat.pop(target_dataset_idx) 
+            perturb_recat = np.hstack(perturb_recat)
             diff_recat = (perturb_recat != baseline_recat) # T: if the class change 
             mask_cat = feature_mask[:, [i]]| nan_mask_cat
             diff_recat = np.ma.masked_array(diff_recat, mask = mask_cat)
@@ -830,6 +839,74 @@ def save_results(
             output_path / f"results_sig_assoc_{task_type}.tsv", sep="\t", index=False
         )
 
+def save_results_cat(
+    config: MOVEConfig,
+    cat_shapes:list[int],
+    cat_names: list[list[str]],
+    output_path: Path,
+    sig_ids,
+    extra_cols,
+    extra_colnames,
+) -> None:
+    """
+    This function saves the obtained associations in a TSV file containing
+    the following columns:
+        feature_a_id
+        feature_b_id
+        feature_a_name
+        feature_b_name
+        feature_b_dataset
+        proba/p_value: number quantifying the significance of the association
+
+    Args:
+        config: main config
+        con_shapes: tuple with the number of features per continuous dataset
+        cat_names: list of lists of names for the categorical features.
+                   Each inner list corresponds to a separate dataset.
+        con_names: list of lists of names for the continuous features.
+                   Each inner list corresponds to a separate dataset.
+        output_path: path where the results will be saved
+        sig_ids: ids for the significat features
+        extra_cols: extra data when calling the approach function
+        extra_colnames: names for the extra data columns
+    """
+    logger = get_logger(__name__)
+    logger.info(f"Significant hits found: {sig_ids.size}")
+    task_config = cast(IdentifyAssociationsConfig, config.task)
+    task_type = _get_task_type(task_config)
+    num_catagorical = sum(cat_shapes)
+    if sig_ids.size > 0:
+        sig_ids = np.vstack((sig_ids // num_catagorical, sig_ids % num_catagorical)).T
+        logger.info("Writing results")
+        results = pd.DataFrame(sig_ids, columns=["feature_a_id", "feature_b_id"])
+        target_dataset_idx = config.data.categorical_names.index(
+            task_config.target_dataset
+        )
+        a_df = pd.DataFrame(dict(feature_a_name=cat_names[target_dataset_idx]))
+        a_df.index.name = "feature_a_id"
+        a_df.reset_index(inplace=True)
+        cat_names_wo_target = cat_names.copy()
+        cat_names_wo_target.pop(target_dataset_idx)
+        feature_names = reduce(list.__add__, cat_names_wo_target)
+        b_df = pd.DataFrame(dict(feature_b_name=feature_names))
+        b_df.index.name = "feature_b_id"
+        b_df.reset_index(inplace=True)
+        results = results.merge(a_df, on="feature_a_id", how="left").merge(
+            b_df, on="feature_b_id", how="left"
+        )
+        label = config.data.categorical_names
+        label.pop(target_dataset_idx)
+        results["feature_b_dataset"] = pd.cut(
+            results["feature_b_id"],
+            bins=cast(list[int], np.cumsum([0] + cat_shapes)),
+            right=False,
+            labels=label,
+        )
+        for col, colname in zip(extra_cols, extra_colnames):
+            results[colname] = col
+        results.to_csv(
+            output_path / f"results_sig_assoc_{task_type}.tsv", sep="\t", index=False
+        )
 
 def identify_associations(config: MOVEConfig) -> None:
     """
@@ -904,7 +981,7 @@ def identify_associations(config: MOVEConfig) -> None:
     # Identify associations between categorical and continuous features:
     else:
         logger.info("Beginning task: identify associations categorical")
-        (dataloaders, nan_mask, feature_mask,nan_mask_cat) = prepare_for_categorical_perturbation(
+        (dataloaders, nan_mask, feature_mask, nan_mask_cat) = prepare_for_categorical_perturbation(
             config, interim_path, baseline_dataloader, cat_list
         )
 
@@ -990,16 +1067,27 @@ def identify_associations(config: MOVEConfig) -> None:
         raise ValueError()
 
     ###################### RESULTS ################################
-    save_results(
-        config,
-        con_shapes,
-        cat_names,
-        con_names,
-        output_path,
-        sig_ids,
-        extra_cols,
-        extra_colnames,
-    )
+    if task_type == "bayes_cat":
+        save_results_cat(
+            config,
+            cat_shapes,
+            cat_names,
+            output_path,
+            sig_ids,
+            extra_cols,
+            extra_colnames,
+        )
+    else:
+        save_results(
+            config,
+            con_shapes,
+            cat_names,
+            con_names,
+            output_path,
+            sig_ids,
+            extra_cols,
+            extra_colnames,
+        )
 
     if exists(output_path / f"results_sig_assoc_{task_type}.tsv"):
         association_df = pd.read_csv(

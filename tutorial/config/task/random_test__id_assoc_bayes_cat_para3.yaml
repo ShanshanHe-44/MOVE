@@ -1,0 +1,20 @@
+
+defaults:
+  - identify_associations_bayes_cat
+
+batch_size: 10
+
+num_refits: 30
+
+target_dataset: random.test.drugs
+target_value: 1
+save_refits: True
+
+model:
+  num_hidden:
+    - 200 
+  num_latent: 30 
+
+training_loop:
+  lr: 1e-4
+  num_epochs: 100
